@@ -1,0 +1,35 @@
+{
+  "name": "server",
+  "version": "1.0.0",
+  "description": "",
+  "main": "src/server.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "dev": "nodemon src/server.js",
+    "start": "node src/server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "engines": {
+    "node": ">=22.0.0"
+  },
+  "type": "module",
+  "dependencies": {
+    "@clerk/express": "^2.1.66",
+    "@google/generative-ai": "^0.24.1",
+    "@qdrant/js-client-rest": "^1.17.0",
+    "cloudinary": "^2.8.0",
+    "cors": "^2.8.6",
+    "dotenv": "^17.4.1",
+    "express": "^5.2.1",
+    "inngest": "^4.2.0",
+    "mongoose": "^9.4.1",
+    "multer": "^2.1.1",
+    "svix": "^1.90.0",
+    "zod": "^4.5.4"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.14"
+  }
+}
