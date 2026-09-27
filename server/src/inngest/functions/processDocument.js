@@ -72,33 +72,10 @@ function chunkText(markdown) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 const JINA_BATCH_SIZE = 50;
 const JINA_MODEL = "jina-embeddings-v3";
 const JINA_DIM = 1024;
+
 
 
 
@@ -146,10 +123,6 @@ async function embedChunks(texts) {
   return allEmbeddings;
 }
 
-
-
-
-
 export const processDocument = inngest.createFunction(
   {
     id: "process-document",
@@ -164,7 +137,7 @@ export const processDocument = inngest.createFunction(
           status: "failed",
           errorMessage: error?.message ?? "Unknown error",
         });
-      } catch (_) {  }
+      } catch (_) { }
     },
   },
   async ({ event, step }) => {

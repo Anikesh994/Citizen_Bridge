@@ -9,11 +9,11 @@ import { requireAuth } from "../lib/auth.js";
 const router = express.Router();
 const genAI = new GoogleGenerativeAI(ENV.gemini_api_key);
 
-const TOP_K = 6;
+const INITIAL_TOP_K = 10;
+const FINAL_TOP_K = 5;
 const JINA_MODEL = "jina-embeddings-v3";
 const JINA_DIM = 1024;
-
-
+const JINA_RERANK_MODEL = "jina-reranker-v2-base-multilingual";
 
 async function embedQuery(query) {
   const response = await fetch("https://api.jina.ai/v1/embeddings", {
@@ -39,7 +39,52 @@ async function embedQuery(query) {
   return json.data[0].embedding;
 }
 
+async function rerankChunks(query, documents, topN = FINAL_TOP_K, maxRetries = 2) {
+  if (!documents || documents.length === 0) return [];
 
+  let lastError;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 15_000);
+
+    try {
+      const payload = {
+        model: JINA_RERANK_MODEL,
+        query,
+        documents,
+        top_n: topN,
+      };
+
+      const response = await fetch("https://api.jina.ai/v1/rerank", {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${ENV.jina_api_key}`,
+        },
+        body: JSON.stringify(payload),
+        signal: controller.signal,
+      });
+
+      if (!response.ok) {
+        const err = await response.text();
+        throw new Error(`Jina Rerank error: ${response.status} — ${err}`);
+      }
+
+      const json = await response.json();
+      return json.results;
+    } catch (err) {
+      lastError = err;
+      if (attempt < maxRetries) {
+        // Exponential backoff: 300ms, 600ms
+        await new Promise((resolve) => setTimeout(resolve, 300 * Math.pow(2, attempt)));
+      }
+    } finally {
+      clearTimeout(timeout);
+    }
+  }
+
+  throw lastError;
+}
 
 router.post("/:documentId", requireAuth, async (req, res) => {
   const { query } = req.body;
@@ -50,7 +95,6 @@ router.post("/:documentId", requireAuth, async (req, res) => {
 
   try {
     await connectDB();
-
 
     const doc = await Document.findById(req.params.documentId).select(
       "name status qdrantCollection userId"
@@ -69,13 +113,12 @@ router.post("/:documentId", requireAuth, async (req, res) => {
       return res.status(409).json({ error: "Document has no Qdrant collection" });
     }
 
-
     const queryVector = await embedQuery(query.trim());
 
-
+    // 1. Initial retrieval: fetch 10 candidate chunks from Qdrant
     const searchResults = await qdrant.search(doc.qdrantCollection, {
       vector: queryVector,
-      limit: TOP_K,
+      limit: INITIAL_TOP_K,
       with_payload: true,
     });
 
@@ -86,11 +129,25 @@ router.post("/:documentId", requireAuth, async (req, res) => {
       });
     }
 
+    // 2. Rerank candidate chunks using Jina AI Reranker
+    let topChunks = [];
+    try {
+      const chunkTexts = searchResults.map((r) => r.payload.text);
+      const rankedResults = await rerankChunks(query.trim(), chunkTexts, FINAL_TOP_K);
 
-    const context = searchResults
+      topChunks = rankedResults.map((item) => ({
+        ...searchResults[item.index],
+        rerankScore: item.relevance_score,
+      }));
+    } catch (rerankErr) {
+      console.warn("[Rerank Warning] Fallback to vector search results:", rerankErr.message);
+      topChunks = searchResults.slice(0, FINAL_TOP_K);
+    }
+
+    // 3. Choose top-k (5 chunks) as context for Gemini LLM
+    const context = topChunks
       .map((r, i) => `[Chunk ${i + 1}]\n${r.payload.text}`)
       .join("\n\n---\n\n");
-
 
     const model = genAI.getGenerativeModel({ model: "gemini-3.6-flash" });
 
@@ -105,16 +162,16 @@ ${context}
 
 User question: ${query}
 
-Answer:`
+Answer:`;
 
     const result = await model.generateContent(prompt);
     const answer = result.response.text();
 
     res.json({
       answer,
-      sources: searchResults.map((r) => ({
+      sources: topChunks.map((r) => ({
         chunkIndex: r.payload.chunkIndex,
-        score: Math.round(r.score * 1000) / 1000,
+        score: Math.round((r.rerankScore ?? r.score) * 1000) / 1000,
         text: r.payload.text.slice(0, 200) + (r.payload.text.length > 200 ? "…" : ""),
       })),
     });
